@@ -1,0 +1,593 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, user-scalable=no">
+    <title>DeckMap Mobile – OBS Stream Deck with QR</title>
+    <!-- QR scanner library -->
+    <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
+    <style>
+        * {
+            box-sizing: border-box;
+            user-select: none;
+            -webkit-tap-highlight-color: transparent;
+        }
+
+        body {
+            background: #0a0c10;
+            font-family: system-ui, 'Segoe UI', 'Roboto', sans-serif;
+            margin: 0;
+            padding: 12px;
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+        }
+
+        .app {
+            max-width: 900px;
+            width: 100%;
+            margin: 0 auto;
+            background: #1e1f24;
+            border-radius: 32px;
+            padding: 16px;
+            box-shadow: 0 20px 35px rgba(0,0,0,0.5);
+        }
+
+        .conn-panel {
+            background: #2c2e3a;
+            border-radius: 60px;
+            padding: 8px 16px;
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            justify-content: space-between;
+            gap: 10px;
+            margin-bottom: 20px;
+        }
+
+        .conn-fields {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            flex: 3;
+        }
+
+        .conn-fields input {
+            background: #0f1117;
+            border: none;
+            padding: 10px 12px;
+            border-radius: 40px;
+            color: white;
+            font-size: 0.85rem;
+            flex: 1;
+            min-width: 100px;
+            outline: none;
+            font-family: monospace;
+        }
+
+        .conn-fields input::placeholder {
+            color: #6c6f7e;
+        }
+
+        button {
+            background: #3b3e4e;
+            border: none;
+            border-radius: 40px;
+            padding: 10px 18px;
+            color: white;
+            font-weight: bold;
+            font-size: 0.9rem;
+            cursor: pointer;
+            transition: 0.1s ease;
+            touch-action: manipulation;
+        }
+
+        button:active {
+            transform: scale(0.96);
+            background: #5a5f77;
+        }
+
+        .status {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            background: #00000066;
+            padding: 6px 14px;
+            border-radius: 40px;
+            font-size: 0.8rem;
+        }
+
+        .led {
+            width: 12px;
+            height: 12px;
+            border-radius: 12px;
+            background: #6b6f8a;
+        }
+        .led.connected { background: #2ecc71; box-shadow: 0 0 6px #2ecc71; }
+        .led.disconnected { background: #e74c3c; }
+
+        .toolbar {
+            display: flex;
+            justify-content: space-between;
+            gap: 12px;
+            margin-bottom: 20px;
+            flex-wrap: wrap;
+        }
+        .toolbar button {
+            background: #2c2e3a;
+            flex: 1;
+            font-size: 0.8rem;
+        }
+        .toolbar .edit-active {
+            background: #f39c12;
+            color: #1e1f24;
+        }
+
+        .deck {
+            display: grid;
+            grid-template-columns: repeat(5, 1fr);
+            gap: 12px;
+            aspect-ratio: 5 / 3;
+            margin-bottom: 20px;
+        }
+
+        .deck-btn {
+            background: #2d2f3a;
+            border-radius: 20px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            text-align: center;
+            padding: 12px 4px;
+            cursor: pointer;
+            transition: 0.05s linear;
+            box-shadow: 0 6px 0 #121317;
+            touch-action: manipulation;
+            color: white;
+            font-weight: bold;
+            font-size: 1rem;
+        }
+        .deck-btn:active {
+            transform: translateY(2px);
+            box-shadow: 0 3px 0 #121317;
+        }
+        .deck-btn .icon {
+            font-size: 2rem;
+            margin-bottom: 6px;
+        }
+        .deck-btn .label {
+            font-size: 0.7rem;
+            background: #00000055;
+            padding: 2px 8px;
+            border-radius: 20px;
+            width: 100%;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .empty-btn {
+            background: #1b1d25;
+            box-shadow: 0 4px 0 #0b0d12;
+            color: #5e627a;
+        }
+        .empty-btn:active {
+            transform: translateY(1px);
+        }
+
+        .edit-hint {
+            text-align: center;
+            font-size: 0.7rem;
+            color: #f39c12;
+            margin-top: 8px;
+        }
+
+        /* Modal for QR scanner */
+        .modal {
+            display: none;
+            position: fixed;
+            top: 0; left: 0;
+            width: 100%; height: 100%;
+            background: rgba(0,0,0,0.9);
+            align-items: center;
+            justify-content: center;
+            z-index: 1000;
+            backdrop-filter: blur(4px);
+        }
+        .modal-card {
+            background: #1e1f24;
+            border-radius: 32px;
+            width: 90%;
+            max-width: 500px;
+            padding: 20px;
+            color: white;
+            text-align: center;
+        }
+        #qr-reader {
+            width: 100%;
+            border-radius: 20px;
+            overflow: hidden;
+            margin: 15px 0;
+        }
+        .close-modal {
+            background: #e74c3c;
+            width: 100%;
+            margin-top: 12px;
+        }
+        .action-list {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            margin: 20px 0;
+            max-height: 60vh;
+            overflow-y: auto;
+        }
+        .action-item {
+            background: #2c2e3a;
+            padding: 12px;
+            border-radius: 28px;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            cursor: pointer;
+        }
+        .action-icon { font-size: 1.8rem; }
+        .action-name { font-weight: bold; flex:1; }
+        .action-desc { font-size: 0.7rem; color: #aaa; }
+
+        @media (orientation: portrait) {
+            .app { max-width: 500px; }
+            .deck-btn .icon { font-size: 1.5rem; }
+            .deck-btn .label { font-size: 0.6rem; }
+        }
+    </style>
+</head>
+<body>
+<div class="app">
+    <div class="conn-panel">
+        <div class="conn-fields">
+            <input type="text" id="host" placeholder="IP / hostname" value="localhost">
+            <input type="text" id="port" placeholder="Port" value="4455">
+            <input type="password" id="password" placeholder="Password (optional)">
+        </div>
+        <button id="scanQrBtn">📷 Scan QR</button>
+        <button id="connectBtn">🔌 Connect</button>
+        <div class="status">
+            <div class="led" id="statusLed"></div>
+            <span id="statusText">Offline</span>
+        </div>
+    </div>
+
+    <div class="toolbar">
+        <button id="editToggleBtn">✏️ Edit Mode OFF</button>
+        <button id="clearAllBtn">🗑️ Clear all</button>
+        <button id="saveConfigBtn">💾 Save config</button>
+        <button id="loadConfigBtn">📂 Load config</button>
+    </div>
+
+    <div class="deck" id="deckGrid"></div>
+    <div id="editHint" class="edit-hint" style="display:none;">✨ Tap any button to assign an action ✨</div>
+
+    <!-- Modal for action assignment -->
+    <div id="actionModal" class="modal">
+        <div class="modal-card">
+            <h3>Assign action</h3>
+            <div id="actionListContainer" class="action-list">Loading...</div>
+            <button class="close-modal" id="closeModalBtn">Cancel</button>
+        </div>
+    </div>
+
+    <!-- Modal for QR scanner -->
+    <div id="qrModal" class="modal">
+        <div class="modal-card">
+            <h3>📷 Scan QR Code</h3>
+            <div id="qr-reader"></div>
+            <button id="closeQrModalBtn" class="close-modal">Cancel</button>
+        </div>
+    </div>
+</div>
+
+<script>
+    // ---------- OBS WebSocket client ----------
+    let ws = null;
+    let connected = false;
+    let obsConfig = { host: "localhost", port: 4455, password: "" };
+    let currentMessageId = 0;
+    let pendingRequests = new Map();
+
+    let scenes = [];
+    let audioInputs = [];
+
+    const staticActions = {
+        "obs_start_record":  { icon: "⏺", label: "Start Recording", type: "cmd", cmd: "startRecord" },
+        "obs_stop_record":   { icon: "⏹", label: "Stop Recording",  type: "cmd", cmd: "stopRecord" },
+        "obs_start_stream":  { icon: "📡", label: "Start Stream",    type: "cmd", cmd: "startStream" },
+        "obs_stop_stream":   { icon: "📴", label: "Stop Stream",     type: "cmd", cmd: "stopStream" },
+        "obs_save_replay":   { icon: "✂",  label: "Save Replay",     type: "cmd", cmd: "saveReplay" },
+        "obs_toggle_mic":    { icon: "🎙️", label: "Toggle Mic (first audio)", type: "cmd", cmd: "toggleFirstMic" }
+    };
+
+    let deckButtons = new Array(15).fill(null);
+    let editMode = false;
+
+    // ----- OBS WebSocket helpers -----
+    async function sha256(str) {
+        const encoder = new TextEncoder();
+        const data = encoder.encode(str);
+        const hash = await crypto.subtle.digest('SHA-256', data);
+        return btoa(String.fromCharCode(...new Uint8Array(hash)));
+    }
+    function base64Encode(str) { return btoa(str); }
+
+    function sendRequest(requestType, requestData = {}) {
+        if (!ws || ws.readyState !== WebSocket.OPEN) return Promise.reject("Not connected");
+        const msgId = ++currentMessageId;
+        const payload = { op: 6, d: { requestType, requestId: String(msgId), requestData } };
+        ws.send(JSON.stringify(payload));
+        return new Promise((resolve, reject) => {
+            pendingRequests.set(msgId, { resolve, reject });
+            setTimeout(() => {
+                if (pendingRequests.has(msgId)) {
+                    pendingRequests.delete(msgId);
+                    reject(new Error("Timeout"));
+                }
+            }, 5000);
+        });
+    }
+
+    function handleMessage(data) {
+        const msg = JSON.parse(data);
+        if (msg.op === 0) { // Hello
+            const authNeeded = msg.d.authentication?.challenge;
+            if (authNeeded && obsConfig.password) {
+                const challenge = msg.d.authentication.challenge;
+                const salt = msg.d.authentication.salt;
+                sha256(obsConfig.password + salt).then(secret => {
+                    const secretB64 = base64Encode(secret);
+                    sha256(secretB64 + challenge).then(authString => {
+                        ws.send(JSON.stringify({ op: 1, d: { rpcVersion: 1, authentication: base64Encode(authString) } }));
+                    });
+                });
+            } else {
+                ws.send(JSON.stringify({ op: 1, d: { rpcVersion: 1 } }));
+            }
+        }
+        else if (msg.op === 2) { // Identified
+            connected = true;
+            updateUIStatus();
+            refreshObsData();
+        }
+        else if (msg.op === 7) { // RequestResponse
+            const reqId = msg.d.requestId;
+            if (pendingRequests.has(parseInt(reqId))) {
+                const { resolve } = pendingRequests.get(parseInt(reqId));
+                pendingRequests.delete(parseInt(reqId));
+                resolve(msg.d.responseData);
+            }
+        }
+    }
+
+    async function connectWebSocket() {
+        if (ws) { ws.close(); ws = null; }
+        connected = false;
+        updateUIStatus();
+        const host = document.getElementById("host").value.trim() || "localhost";
+        const port = document.getElementById("port").value.trim() || "4455";
+        const password = document.getElementById("password").value;
+        obsConfig = { host, port, password };
+        const wsUrl = `ws://${host}:${port}`;
+        ws = new WebSocket(wsUrl);
+        ws.onopen = () => {};
+        ws.onmessage = (e) => handleMessage(e.data);
+        ws.onerror = () => { connected = false; updateUIStatus(); };
+        ws.onclose = () => { connected = false; updateUIStatus(); ws = null; };
+        // wait for identification
+        await new Promise(r => setTimeout(r, 800));
+    }
+
+    async function refreshObsData() {
+        if (!connected) return;
+        try {
+            const sceneListResp = await sendRequest("GetSceneList");
+            if (sceneListResp?.scenes) scenes = sceneListResp.scenes.map(s => ({ name: s.sceneName }));
+            const inputsResp = await sendRequest("GetInputList");
+            if (inputsResp?.inputs) {
+                const audioKinds = ["wasapi_input", "wasapi_output", "pulse_input", "coreaudio_input", "alsa_input", "audio_line"];
+                audioInputs = inputsResp.inputs.filter(inp => audioKinds.includes(inp.inputKind) || inp.inputKind.includes("audio")).map(inp => ({ name: inp.inputName }));
+            }
+        } catch(e) { console.warn(e); }
+    }
+
+    async function executeAction(actionId) {
+        if (!connected) { alert("Not connected to OBS"); return false; }
+        try {
+            if (actionId.startsWith("scene_")) {
+                await sendRequest("SetCurrentProgramScene", { sceneName: actionId.substring(6) });
+                showToast("Switched scene");
+            } else if (actionId.startsWith("mute_")) {
+                await sendRequest("ToggleInputMute", { inputName: actionId.substring(5) });
+                showToast("Toggled mute");
+            } else if (actionId === "obs_start_record") { await sendRequest("StartRecord"); showToast("Recording started");
+            } else if (actionId === "obs_stop_record") { await sendRequest("StopRecord"); showToast("Recording stopped");
+            } else if (actionId === "obs_start_stream") { await sendRequest("StartStream"); showToast("Stream started");
+            } else if (actionId === "obs_stop_stream") { await sendRequest("StopStream"); showToast("Stream stopped");
+            } else if (actionId === "obs_save_replay") { await sendRequest("SaveReplayBuffer"); showToast("Replay saved");
+            } else if (actionId === "obs_toggle_mic" && audioInputs.length) {
+                await sendRequest("ToggleInputMute", { inputName: audioInputs[0].name });
+                showToast("Toggled mic");
+            } else alert("Unknown action");
+            return true;
+        } catch(e) { alert("Command failed: " + e.message); return false; }
+    }
+
+    // ----- UI helpers -----
+    function updateUIStatus() {
+        const led = document.getElementById("statusLed");
+        const text = document.getElementById("statusText");
+        if (connected) {
+            led.className = "led connected";
+            text.innerText = "Connected to OBS";
+        } else {
+            led.className = "led disconnected";
+            text.innerText = "Disconnected";
+        }
+    }
+
+    function renderDeck() {
+        const container = document.getElementById("deckGrid");
+        container.innerHTML = "";
+        for (let i = 0; i < 15; i++) {
+            const btn = deckButtons[i];
+            const btnDiv = document.createElement("div");
+            btnDiv.className = "deck-btn" + (btn ? "" : " empty-btn");
+            if (btn) {
+                btnDiv.innerHTML = `<div class="icon">${btn.icon}</div><div class="label">${btn.label}</div>`;
+            } else {
+                btnDiv.innerHTML = `<div class="icon">❓</div><div class="label">empty</div>`;
+            }
+            btnDiv.addEventListener("click", (e) => {
+                e.stopPropagation();
+                if (editMode) openAssignModal(i);
+                else if (deckButtons[i]) executeAction(deckButtons[i].actionId);
+                else alert("No action assigned. Enable edit mode to assign.");
+            });
+            container.appendChild(btnDiv);
+        }
+    }
+
+    function openAssignModal(index) {
+        if (!connected) { alert("Connect to OBS first"); return; }
+        const modal = document.getElementById("actionModal");
+        const container = document.getElementById("actionListContainer");
+        let html = "";
+        if (scenes.length) {
+            html += `<div style="margin:5px 0 0; font-size:0.8rem; color:#f39c12;">🎬 SCENES</div>`;
+            scenes.forEach(scene => {
+                const action = { actionId: "scene_"+scene.name, icon:"🎬", label: scene.name };
+                html += `<div class="action-item" data-action='${JSON.stringify(action)}'><div class="action-icon">🎬</div><div><div class="action-name">${escapeHtml(scene.name)}</div><div class="action-desc">Switch scene</div></div></div>`;
+            });
+        }
+        if (audioInputs.length) {
+            html += `<div style="margin:10px 0 0; font-size:0.8rem; color:#f39c12;">🎤 AUDIO (mute toggle)</div>`;
+            audioInputs.forEach(inp => {
+                const action = { actionId: "mute_"+inp.name, icon:"🔇", label: "🔇 "+inp.name };
+                html += `<div class="action-item" data-action='${JSON.stringify(action)}'><div class="action-icon">🔇</div><div><div class="action-name">${escapeHtml(inp.name)}</div><div class="action-desc">Toggle mute</div></div></div>`;
+            });
+        }
+        html += `<div style="margin:10px 0 0; font-size:0.8rem; color:#f39c12;">⚙️ OBS COMMANDS</div>`;
+        for (const [id, def] of Object.entries(staticActions)) {
+            const action = { actionId: id, icon: def.icon, label: def.label };
+            html += `<div class="action-item" data-action='${JSON.stringify(action)}'><div class="action-icon">${def.icon}</div><div><div class="action-name">${def.label}</div><div class="action-desc">${id}</div></div></div>`;
+        }
+        container.innerHTML = html;
+        document.querySelectorAll(".action-item").forEach(el => {
+            el.addEventListener("click", () => {
+                const action = JSON.parse(el.getAttribute("data-action"));
+                deckButtons[index] = { actionId: action.actionId, icon: action.icon, label: action.label.length > 18 ? action.label.slice(0,15)+"…" : action.label };
+                renderDeck();
+                modal.style.display = "none";
+                saveLocalConfig();
+            });
+        });
+        modal.style.display = "flex";
+    }
+
+    function clearAll() { if(confirm("Clear all?")){ deckButtons.fill(null); renderDeck(); saveLocalConfig(); } }
+    function saveLocalConfig() {
+        localStorage.setItem("deckmap_config", JSON.stringify({ deck: deckButtons.map(b=>b?{actionId:b.actionId,icon:b.icon,label:b.label}:null), connection: obsConfig }));
+        alert("Saved");
+    }
+    function loadLocalConfig() {
+        const raw = localStorage.getItem("deckmap_config");
+        if(raw) try {
+            const data=JSON.parse(raw);
+            if(data.deck?.length===15) deckButtons=data.deck.map(b=>b?{actionId:b.actionId,icon:b.icon,label:b.label}:null);
+            if(data.connection){ document.getElementById("host").value=data.connection.host||"localhost"; document.getElementById("port").value=data.connection.port||"4455"; document.getElementById("password").value=data.connection.password||""; obsConfig=data.connection; }
+            renderDeck(); alert("Loaded");
+        } catch(e){}
+        else alert("No saved config");
+    }
+    function showToast(msg) {
+        const toast=document.createElement("div");
+        toast.innerText=msg; toast.style.position="fixed"; toast.style.bottom="20px"; toast.style.left="20px"; toast.style.right="20px"; toast.style.background="#2c3e50"; toast.style.color="white"; toast.style.padding="12px"; toast.style.borderRadius="40px"; toast.style.textAlign="center"; toast.style.zIndex="2000";
+        document.body.appendChild(toast); setTimeout(()=>toast.remove(),1500);
+    }
+    function escapeHtml(str){ return str.replace(/[&<>]/g, function(m){if(m==='&') return '&amp;'; if(m==='<') return '&lt;'; if(m==='>') return '&gt;'; return m;}); }
+    function toggleEditMode(){ editMode=!editMode; const btn=document.getElementById("editToggleBtn"); const hint=document.getElementById("editHint"); if(editMode){ btn.innerText="✅ Edit Mode ON"; btn.classList.add("edit-active"); hint.style.display="block"; } else { btn.innerText="✏️ Edit Mode OFF"; btn.classList.remove("edit-active"); hint.style.display="none"; } }
+
+    // ----- QR Code Scanner -----
+    let html5QrCode = null;
+    async function startQrScanner() {
+        const qrModal = document.getElementById("qrModal");
+        const readerDiv = document.getElementById("qr-reader");
+        readerDiv.innerHTML = ""; // clear previous
+        qrModal.style.display = "flex";
+        html5QrCode = new Html5Qrcode("qr-reader");
+        try {
+            await html5QrCode.start({ facingMode: "environment" }, { fps: 10, qrbox: { width: 250, height: 250 } }, (decodedText, decodedResult) => {
+                // Success: parse QR data
+                html5QrCode.stop();
+                qrModal.style.display = "none";
+                parseQrData(decodedText);
+            });
+        } catch(err) { console.error("QR error", err); alert("Cannot access camera. Please grant permissions."); qrModal.style.display = "none"; }
+    }
+
+    function parseQrData(data) {
+        try {
+            let parsed = null;
+            // try JSON
+            if (data.trim().startsWith("{")) {
+                parsed = JSON.parse(data);
+                if (parsed.host) document.getElementById("host").value = parsed.host;
+                if (parsed.port) document.getElementById("port").value = parsed.port;
+                if (parsed.password !== undefined) document.getElementById("password").value = parsed.password;
+            } else {
+                // try format: host:port:password   or host:port
+                const parts = data.split(":");
+                if (parts.length >= 2) {
+                    document.getElementById("host").value = parts[0];
+                    document.getElementById("port").value = parts[1];
+                    if (parts.length >= 3) document.getElementById("password").value = parts.slice(2).join(":");
+                } else {
+                    throw new Error("Unrecognized QR format");
+                }
+            }
+            showToast("QR code applied! Tap Connect.");
+            // optionally auto-connect
+            connectWebSocket();
+        } catch(e) { alert("Invalid QR data: "+data); }
+    }
+
+    // ----- Event listeners -----
+    document.getElementById("connectBtn").addEventListener("click", connectWebSocket);
+    document.getElementById("scanQrBtn").addEventListener("click", startQrScanner);
+    document.getElementById("editToggleBtn").addEventListener("click", toggleEditMode);
+    document.getElementById("clearAllBtn").addEventListener("click", clearAll);
+    document.getElementById("saveConfigBtn").addEventListener("click", saveLocalConfig);
+    document.getElementById("loadConfigBtn").addEventListener("click", loadLocalConfig);
+    document.getElementById("closeModalBtn").addEventListener("click", () => document.getElementById("actionModal").style.display = "none");
+    document.getElementById("closeQrModalBtn").addEventListener("click", () => {
+        if(html5QrCode) html5QrCode.stop().catch(console.warn);
+        document.getElementById("qrModal").style.display = "none";
+    });
+    window.addEventListener("click", (e) => {
+        if(e.target === document.getElementById("actionModal")) document.getElementById("actionModal").style.display = "none";
+        if(e.target === document.getElementById("qrModal")) {
+            if(html5QrCode) html5QrCode.stop().catch(console.warn);
+            document.getElementById("qrModal").style.display = "none";
+        }
+    });
+
+    // initial load
+    loadLocalConfig();
+    renderDeck();
+    setTimeout(() => {
+        const host = document.getElementById("host").value;
+        const port = document.getElementById("port").value;
+        if(host && port) connectWebSocket();
+    }, 100);
+</script>
+</body>
+</html>
