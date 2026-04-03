@@ -4,7 +4,6 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, user-scalable=no">
     <title>DeckMap Mobile – OBS Stream Deck with QR</title>
-    <!-- QR scanner library -->
     <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
     <style>
         * {
@@ -183,7 +182,6 @@
             margin-top: 8px;
         }
 
-        /* Modal for QR scanner */
         .modal {
             display: none;
             position: fixed;
@@ -236,6 +234,24 @@
         .action-name { font-weight: bold; flex:1; }
         .action-desc { font-size: 0.7rem; color: #aaa; }
 
+        /* Toast */
+        .toast {
+            position: fixed;
+            bottom: 20px;
+            left: 20px;
+            right: 20px;
+            background: #2c3e50;
+            color: white;
+            padding: 12px;
+            border-radius: 40px;
+            text-align: center;
+            z-index: 2000;
+            pointer-events: none;
+            opacity: 1;
+            transition: opacity 0.4s ease;
+        }
+        .toast.fade { opacity: 0; }
+
         @media (orientation: portrait) {
             .app { max-width: 500px; }
             .deck-btn .icon { font-size: 1.5rem; }
@@ -269,7 +285,7 @@
     <div class="deck" id="deckGrid"></div>
     <div id="editHint" class="edit-hint" style="display:none;">✨ Tap any button to assign an action ✨</div>
 
-    <!-- Modal for action assignment -->
+    <!-- Action assignment modal -->
     <div id="actionModal" class="modal">
         <div class="modal-card">
             <h3>Assign action</h3>
@@ -278,7 +294,7 @@
         </div>
     </div>
 
-    <!-- Modal for QR scanner -->
+    <!-- QR scanner modal -->
     <div id="qrModal" class="modal">
         <div class="modal-card">
             <h3>📷 Scan QR Code</h3>
@@ -289,7 +305,7 @@
 </div>
 
 <script>
-    // ---------- OBS WebSocket client ----------
+    // ── OBS WebSocket client ──────────────────────────────────────────────────
     let ws = null;
     let connected = false;
     let obsConfig = { host: "localhost", port: 4455, password: "" };
@@ -300,31 +316,32 @@
     let audioInputs = [];
 
     const staticActions = {
-        "obs_start_record":  { icon: "⏺", label: "Start Recording", type: "cmd", cmd: "startRecord" },
-        "obs_stop_record":   { icon: "⏹", label: "Stop Recording",  type: "cmd", cmd: "stopRecord" },
-        "obs_start_stream":  { icon: "📡", label: "Start Stream",    type: "cmd", cmd: "startStream" },
-        "obs_stop_stream":   { icon: "📴", label: "Stop Stream",     type: "cmd", cmd: "stopStream" },
-        "obs_save_replay":   { icon: "✂",  label: "Save Replay",     type: "cmd", cmd: "saveReplay" },
-        "obs_toggle_mic":    { icon: "🎙️", label: "Toggle Mic (first audio)", type: "cmd", cmd: "toggleFirstMic" }
+        "obs_start_record":  { icon: "⏺", label: "Start Recording" },
+        "obs_stop_record":   { icon: "⏹", label: "Stop Recording"  },
+        "obs_start_stream":  { icon: "📡", label: "Start Stream"    },
+        "obs_stop_stream":   { icon: "📴", label: "Stop Stream"     },
+        "obs_save_replay":   { icon: "✂",  label: "Save Replay"     },
+        "obs_toggle_mic":    { icon: "🎙️", label: "Toggle Mic"      }
     };
 
     let deckButtons = new Array(15).fill(null);
     let editMode = false;
 
-    // ----- OBS WebSocket helpers -----
-    async function sha256(str) {
-        const encoder = new TextEncoder();
-        const data = encoder.encode(str);
-        const hash = await crypto.subtle.digest('SHA-256', data);
+    // ── Crypto helpers ────────────────────────────────────────────────────────
+    // OBS WebSocket v5 auth:
+    //   secret   = base64( sha256( password + salt ) )
+    //   authStr  = base64( sha256( secret + challenge ) )
+    async function sha256Base64(str) {
+        const data = new TextEncoder().encode(str);
+        const hash = await crypto.subtle.digest("SHA-256", data);
         return btoa(String.fromCharCode(...new Uint8Array(hash)));
     }
-    function base64Encode(str) { return btoa(str); }
 
+    // ── WebSocket helpers ─────────────────────────────────────────────────────
     function sendRequest(requestType, requestData = {}) {
-        if (!ws || ws.readyState !== WebSocket.OPEN) return Promise.reject("Not connected");
+        if (!ws || ws.readyState !== WebSocket.OPEN) return Promise.reject(new Error("Not connected"));
         const msgId = ++currentMessageId;
-        const payload = { op: 6, d: { requestType, requestId: String(msgId), requestData } };
-        ws.send(JSON.stringify(payload));
+        ws.send(JSON.stringify({ op: 6, d: { requestType, requestId: String(msgId), requestData } }));
         return new Promise((resolve, reject) => {
             pendingRequests.set(msgId, { resolve, reject });
             setTimeout(() => {
@@ -336,258 +353,333 @@
         });
     }
 
-    function handleMessage(data) {
+    async function handleMessage(data) {
         const msg = JSON.parse(data);
-        if (msg.op === 0) { // Hello
-            const authNeeded = msg.d.authentication?.challenge;
-            if (authNeeded && obsConfig.password) {
-                const challenge = msg.d.authentication.challenge;
-                const salt = msg.d.authentication.salt;
-                sha256(obsConfig.password + salt).then(secret => {
-                    const secretB64 = base64Encode(secret);
-                    sha256(secretB64 + challenge).then(authString => {
-                        ws.send(JSON.stringify({ op: 1, d: { rpcVersion: 1, authentication: base64Encode(authString) } }));
-                    });
-                });
+
+        if (msg.op === 0) { // Hello — server sends auth challenge
+            const authInfo = msg.d.authentication;
+            if (authInfo && obsConfig.password) {
+                const secret  = await sha256Base64(obsConfig.password + authInfo.salt);
+                const authStr = await sha256Base64(secret + authInfo.challenge);
+                ws.send(JSON.stringify({ op: 1, d: { rpcVersion: 1, authentication: authStr } }));
             } else {
                 ws.send(JSON.stringify({ op: 1, d: { rpcVersion: 1 } }));
             }
         }
-        else if (msg.op === 2) { // Identified
+        else if (msg.op === 2) { // Identified — connection ready
             connected = true;
             updateUIStatus();
             refreshObsData();
         }
         else if (msg.op === 7) { // RequestResponse
-            const reqId = msg.d.requestId;
-            if (pendingRequests.has(parseInt(reqId))) {
-                const { resolve } = pendingRequests.get(parseInt(reqId));
-                pendingRequests.delete(parseInt(reqId));
-                resolve(msg.d.responseData);
+            const reqId = parseInt(msg.d.requestId, 10);
+            const pending = pendingRequests.get(reqId);
+            if (pending) {
+                pendingRequests.delete(reqId);
+                if (msg.d.requestStatus?.result === false) {
+                    pending.reject(new Error(msg.d.requestStatus.comment || "Request failed"));
+                } else {
+                    pending.resolve(msg.d.responseData || {});
+                }
             }
         }
     }
 
-    async function connectWebSocket() {
-        if (ws) { ws.close(); ws = null; }
+    function connectWebSocket() {
+        if (ws) { try { ws.close(); } catch(_) {} ws = null; }
         connected = false;
         updateUIStatus();
-        const host = document.getElementById("host").value.trim() || "localhost";
-        const port = document.getElementById("port").value.trim() || "4455";
+
+        const host     = document.getElementById("host").value.trim() || "localhost";
+        const port     = document.getElementById("port").value.trim() || "4455";
         const password = document.getElementById("password").value;
         obsConfig = { host, port, password };
-        const wsUrl = `ws://${host}:${port}`;
-        ws = new WebSocket(wsUrl);
-        ws.onopen = () => {};
+
+        ws = new WebSocket(`ws://${host}:${port}`);
         ws.onmessage = (e) => handleMessage(e.data);
-        ws.onerror = () => { connected = false; updateUIStatus(); };
-        ws.onclose = () => { connected = false; updateUIStatus(); ws = null; };
-        // wait for identification
-        await new Promise(r => setTimeout(r, 800));
+        ws.onerror   = ()  => { connected = false; updateUIStatus(); showToast("⚠️ Connection error"); };
+        ws.onclose   = ()  => { connected = false; updateUIStatus(); ws = null; };
     }
 
     async function refreshObsData() {
         if (!connected) return;
         try {
-            const sceneListResp = await sendRequest("GetSceneList");
-            if (sceneListResp?.scenes) scenes = sceneListResp.scenes.map(s => ({ name: s.sceneName }));
+            const sceneResp = await sendRequest("GetSceneList");
+            if (sceneResp?.scenes) {
+                scenes = sceneResp.scenes.map(s => ({ name: s.sceneName }));
+            }
+        } catch(e) { console.warn("GetSceneList failed:", e); }
+
+        try {
             const inputsResp = await sendRequest("GetInputList");
             if (inputsResp?.inputs) {
-                const audioKinds = ["wasapi_input", "wasapi_output", "pulse_input", "coreaudio_input", "alsa_input", "audio_line"];
-                audioInputs = inputsResp.inputs.filter(inp => audioKinds.includes(inp.inputKind) || inp.inputKind.includes("audio")).map(inp => ({ name: inp.inputName }));
+                // Accept any input whose kind contains common audio keywords
+                audioInputs = inputsResp.inputs.filter(inp => {
+                    const k = (inp.inputKind || "").toLowerCase();
+                    return k.includes("wasapi") || k.includes("pulse") || k.includes("coreaudio") ||
+                           k.includes("alsa")   || k.includes("audio") || k.includes("mic")     ||
+                           k.includes("capture");
+                }).map(inp => ({ name: inp.inputName }));
             }
-        } catch(e) { console.warn(e); }
+        } catch(e) { console.warn("GetInputList failed:", e); }
     }
 
     async function executeAction(actionId) {
-        if (!connected) { alert("Not connected to OBS"); return false; }
+        if (!connected) { showToast("⚠️ Not connected to OBS"); return; }
         try {
-            if (actionId.startsWith("scene_")) {
-                await sendRequest("SetCurrentProgramScene", { sceneName: actionId.substring(6) });
-                showToast("Switched scene");
-            } else if (actionId.startsWith("mute_")) {
-                await sendRequest("ToggleInputMute", { inputName: actionId.substring(5) });
-                showToast("Toggled mute");
-            } else if (actionId === "obs_start_record") { await sendRequest("StartRecord"); showToast("Recording started");
-            } else if (actionId === "obs_stop_record") { await sendRequest("StopRecord"); showToast("Recording stopped");
-            } else if (actionId === "obs_start_stream") { await sendRequest("StartStream"); showToast("Stream started");
-            } else if (actionId === "obs_stop_stream") { await sendRequest("StopStream"); showToast("Stream stopped");
-            } else if (actionId === "obs_save_replay") { await sendRequest("SaveReplayBuffer"); showToast("Replay saved");
-            } else if (actionId === "obs_toggle_mic" && audioInputs.length) {
-                await sendRequest("ToggleInputMute", { inputName: audioInputs[0].name });
-                showToast("Toggled mic");
-            } else alert("Unknown action");
-            return true;
-        } catch(e) { alert("Command failed: " + e.message); return false; }
+            if      (actionId.startsWith("scene_"))       { await sendRequest("SetCurrentProgramScene", { sceneName: actionId.slice(6) }); showToast("🎬 Scene switched"); }
+            else if (actionId.startsWith("mute_"))        { await sendRequest("ToggleInputMute",        { inputName: actionId.slice(5) }); showToast("🔇 Mute toggled"); }
+            else if (actionId === "obs_start_record")     { await sendRequest("StartRecord");            showToast("⏺ Recording started"); }
+            else if (actionId === "obs_stop_record")      { await sendRequest("StopRecord");             showToast("⏹ Recording stopped"); }
+            else if (actionId === "obs_start_stream")     { await sendRequest("StartStream");            showToast("📡 Stream started"); }
+            else if (actionId === "obs_stop_stream")      { await sendRequest("StopStream");             showToast("📴 Stream stopped"); }
+            else if (actionId === "obs_save_replay")      { await sendRequest("SaveReplayBuffer");       showToast("✂ Replay saved"); }
+            else if (actionId === "obs_toggle_mic") {
+                if (audioInputs.length) { await sendRequest("ToggleInputMute", { inputName: audioInputs[0].name }); showToast("🎙️ Mic toggled"); }
+                else showToast("⚠️ No audio inputs found");
+            }
+            else showToast("⚠️ Unknown action: " + actionId);
+        } catch(e) { showToast("❌ " + e.message); }
     }
 
-    // ----- UI helpers -----
+    // ── UI helpers ────────────────────────────────────────────────────────────
     function updateUIStatus() {
-        const led = document.getElementById("statusLed");
+        const led  = document.getElementById("statusLed");
         const text = document.getElementById("statusText");
-        if (connected) {
-            led.className = "led connected";
-            text.innerText = "Connected to OBS";
-        } else {
-            led.className = "led disconnected";
-            text.innerText = "Disconnected";
-        }
+        led.className  = "led " + (connected ? "connected" : "disconnected");
+        text.innerText = connected ? "Connected to OBS" : "Disconnected";
     }
 
     function renderDeck() {
         const container = document.getElementById("deckGrid");
         container.innerHTML = "";
         for (let i = 0; i < 15; i++) {
-            const btn = deckButtons[i];
+            const btn    = deckButtons[i];
             const btnDiv = document.createElement("div");
             btnDiv.className = "deck-btn" + (btn ? "" : " empty-btn");
-            if (btn) {
-                btnDiv.innerHTML = `<div class="icon">${btn.icon}</div><div class="label">${btn.label}</div>`;
-            } else {
-                btnDiv.innerHTML = `<div class="icon">❓</div><div class="label">empty</div>`;
-            }
+            btnDiv.innerHTML = btn
+                ? `<div class="icon">${btn.icon}</div><div class="label">${btn.label}</div>`
+                : `<div class="icon">❓</div><div class="label">empty</div>`;
             btnDiv.addEventListener("click", (e) => {
                 e.stopPropagation();
-                if (editMode) openAssignModal(i);
-                else if (deckButtons[i]) executeAction(deckButtons[i].actionId);
-                else alert("No action assigned. Enable edit mode to assign.");
+                if (editMode)      openAssignModal(i);
+                else if (btn)      executeAction(btn.actionId);
+                else               showToast("Enable edit mode to assign actions");
             });
             container.appendChild(btnDiv);
         }
     }
 
     function openAssignModal(index) {
-        if (!connected) { alert("Connect to OBS first"); return; }
-        const modal = document.getElementById("actionModal");
+        if (!connected) { showToast("⚠️ Connect to OBS first"); return; }
+        const modal     = document.getElementById("actionModal");
         const container = document.getElementById("actionListContainer");
         let html = "";
+
         if (scenes.length) {
-            html += `<div style="margin:5px 0 0; font-size:0.8rem; color:#f39c12;">🎬 SCENES</div>`;
+            html += `<div style="margin:5px 0 4px;font-size:0.8rem;color:#f39c12;">🎬 SCENES</div>`;
             scenes.forEach(scene => {
-                const action = { actionId: "scene_"+scene.name, icon:"🎬", label: scene.name };
-                html += `<div class="action-item" data-action='${JSON.stringify(action)}'><div class="action-icon">🎬</div><div><div class="action-name">${escapeHtml(scene.name)}</div><div class="action-desc">Switch scene</div></div></div>`;
+                const action = { actionId: "scene_" + scene.name, icon: "🎬", label: scene.name };
+                html += actionItemHtml(action, "Switch scene");
             });
         }
+
         if (audioInputs.length) {
-            html += `<div style="margin:10px 0 0; font-size:0.8rem; color:#f39c12;">🎤 AUDIO (mute toggle)</div>`;
+            html += `<div style="margin:10px 0 4px;font-size:0.8rem;color:#f39c12;">🎤 AUDIO (mute toggle)</div>`;
             audioInputs.forEach(inp => {
-                const action = { actionId: "mute_"+inp.name, icon:"🔇", label: "🔇 "+inp.name };
-                html += `<div class="action-item" data-action='${JSON.stringify(action)}'><div class="action-icon">🔇</div><div><div class="action-name">${escapeHtml(inp.name)}</div><div class="action-desc">Toggle mute</div></div></div>`;
+                const action = { actionId: "mute_" + inp.name, icon: "🔇", label: inp.name };
+                html += actionItemHtml(action, "Toggle mute");
             });
         }
-        html += `<div style="margin:10px 0 0; font-size:0.8rem; color:#f39c12;">⚙️ OBS COMMANDS</div>`;
+
+        html += `<div style="margin:10px 0 4px;font-size:0.8rem;color:#f39c12;">⚙️ OBS COMMANDS</div>`;
         for (const [id, def] of Object.entries(staticActions)) {
             const action = { actionId: id, icon: def.icon, label: def.label };
-            html += `<div class="action-item" data-action='${JSON.stringify(action)}'><div class="action-icon">${def.icon}</div><div><div class="action-name">${def.label}</div><div class="action-desc">${id}</div></div></div>`;
+            html += actionItemHtml(action, id);
         }
+
         container.innerHTML = html;
-        document.querySelectorAll(".action-item").forEach(el => {
+        container.querySelectorAll(".action-item").forEach(el => {
             el.addEventListener("click", () => {
                 const action = JSON.parse(el.getAttribute("data-action"));
-                deckButtons[index] = { actionId: action.actionId, icon: action.icon, label: action.label.length > 18 ? action.label.slice(0,15)+"…" : action.label };
+                deckButtons[index] = {
+                    actionId: action.actionId,
+                    icon:     action.icon,
+                    label:    action.label.length > 18 ? action.label.slice(0, 15) + "…" : action.label
+                };
                 renderDeck();
                 modal.style.display = "none";
-                saveLocalConfig();
+                persistConfig();
             });
         });
         modal.style.display = "flex";
     }
 
-    function clearAll() { if(confirm("Clear all?")){ deckButtons.fill(null); renderDeck(); saveLocalConfig(); } }
-    function saveLocalConfig() {
-        localStorage.setItem("deckmap_config", JSON.stringify({ deck: deckButtons.map(b=>b?{actionId:b.actionId,icon:b.icon,label:b.label}:null), connection: obsConfig }));
-        alert("Saved");
+    function actionItemHtml(action, desc) {
+        const safe = escapeHtml(action.label);
+        const data = escapeHtml(JSON.stringify(action));
+        return `<div class="action-item" data-action='${data}'>
+            <div class="action-icon">${action.icon}</div>
+            <div><div class="action-name">${safe}</div><div class="action-desc">${escapeHtml(desc)}</div></div>
+        </div>`;
     }
-    function loadLocalConfig() {
-        const raw = localStorage.getItem("deckmap_config");
-        if(raw) try {
-            const data=JSON.parse(raw);
-            if(data.deck?.length===15) deckButtons=data.deck.map(b=>b?{actionId:b.actionId,icon:b.icon,label:b.label}:null);
-            if(data.connection){ document.getElementById("host").value=data.connection.host||"localhost"; document.getElementById("port").value=data.connection.port||"4455"; document.getElementById("password").value=data.connection.password||""; obsConfig=data.connection; }
-            renderDeck(); alert("Loaded");
-        } catch(e){}
-        else alert("No saved config");
-    }
-    function showToast(msg) {
-        const toast=document.createElement("div");
-        toast.innerText=msg; toast.style.position="fixed"; toast.style.bottom="20px"; toast.style.left="20px"; toast.style.right="20px"; toast.style.background="#2c3e50"; toast.style.color="white"; toast.style.padding="12px"; toast.style.borderRadius="40px"; toast.style.textAlign="center"; toast.style.zIndex="2000";
-        document.body.appendChild(toast); setTimeout(()=>toast.remove(),1500);
-    }
-    function escapeHtml(str){ return str.replace(/[&<>]/g, function(m){if(m==='&') return '&amp;'; if(m==='<') return '&lt;'; if(m==='>') return '&gt;'; return m;}); }
-    function toggleEditMode(){ editMode=!editMode; const btn=document.getElementById("editToggleBtn"); const hint=document.getElementById("editHint"); if(editMode){ btn.innerText="✅ Edit Mode ON"; btn.classList.add("edit-active"); hint.style.display="block"; } else { btn.innerText="✏️ Edit Mode OFF"; btn.classList.remove("edit-active"); hint.style.display="none"; } }
 
-    // ----- QR Code Scanner -----
+    function escapeHtml(str) {
+        return String(str).replace(/[&<>"']/g, m => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[m]));
+    }
+
+    function toggleEditMode() {
+        editMode = !editMode;
+        const btn  = document.getElementById("editToggleBtn");
+        const hint = document.getElementById("editHint");
+        btn.innerText = editMode ? "✅ Edit Mode ON" : "✏️ Edit Mode OFF";
+        btn.classList.toggle("edit-active", editMode);
+        hint.style.display = editMode ? "block" : "none";
+    }
+
+    // ── Persistence (no alert spam) ───────────────────────────────────────────
+    function persistConfig() {
+        try {
+            localStorage.setItem("deckmap_config", JSON.stringify({
+                deck:       deckButtons.map(b => b ? { actionId: b.actionId, icon: b.icon, label: b.label } : null),
+                connection: obsConfig
+            }));
+        } catch(e) { console.warn("Save failed:", e); }
+    }
+
+    function saveLocalConfig() {
+        persistConfig();
+        showToast("💾 Config saved");
+    }
+
+    function loadLocalConfig(silent = false) {
+        const raw = localStorage.getItem("deckmap_config");
+        if (!raw) { if (!silent) showToast("No saved config found"); return; }
+        try {
+            const data = JSON.parse(raw);
+            if (Array.isArray(data.deck) && data.deck.length === 15) {
+                deckButtons = data.deck.map(b => b ? { actionId: b.actionId, icon: b.icon, label: b.label } : null);
+            }
+            if (data.connection) {
+                document.getElementById("host").value     = data.connection.host     || "localhost";
+                document.getElementById("port").value     = data.connection.port     || "4455";
+                document.getElementById("password").value = data.connection.password || "";
+                obsConfig = data.connection;
+            }
+            renderDeck();
+            if (!silent) showToast("📂 Config loaded");
+        } catch(e) { if (!silent) showToast("⚠️ Could not parse saved config"); }
+    }
+
+    function clearAll() {
+        if (!confirm("Clear all button assignments?")) return;
+        deckButtons.fill(null);
+        renderDeck();
+        persistConfig();
+        showToast("🗑️ Cleared");
+    }
+
+    // ── Toast ─────────────────────────────────────────────────────────────────
+    let toastTimer = null;
+    function showToast(msg) {
+        let toast = document.querySelector(".toast");
+        if (!toast) {
+            toast = document.createElement("div");
+            toast.className = "toast";
+            document.body.appendChild(toast);
+        }
+        toast.classList.remove("fade");
+        toast.innerText = msg;
+        if (toastTimer) clearTimeout(toastTimer);
+        toastTimer = setTimeout(() => {
+            toast.classList.add("fade");
+            setTimeout(() => toast.remove(), 400);
+            toastTimer = null;
+        }, 1800);
+    }
+
+    // ── QR scanner ────────────────────────────────────────────────────────────
     let html5QrCode = null;
+
     async function startQrScanner() {
-        const qrModal = document.getElementById("qrModal");
+        const qrModal   = document.getElementById("qrModal");
         const readerDiv = document.getElementById("qr-reader");
-        readerDiv.innerHTML = ""; // clear previous
+        readerDiv.innerHTML = "";
         qrModal.style.display = "flex";
         html5QrCode = new Html5Qrcode("qr-reader");
         try {
-            await html5QrCode.start({ facingMode: "environment" }, { fps: 10, qrbox: { width: 250, height: 250 } }, (decodedText, decodedResult) => {
-                // Success: parse QR data
-                html5QrCode.stop();
-                qrModal.style.display = "none";
-                parseQrData(decodedText);
-            });
-        } catch(err) { console.error("QR error", err); alert("Cannot access camera. Please grant permissions."); qrModal.style.display = "none"; }
-    }
-
-    function parseQrData(data) {
-        try {
-            let parsed = null;
-            // try JSON
-            if (data.trim().startsWith("{")) {
-                parsed = JSON.parse(data);
-                if (parsed.host) document.getElementById("host").value = parsed.host;
-                if (parsed.port) document.getElementById("port").value = parsed.port;
-                if (parsed.password !== undefined) document.getElementById("password").value = parsed.password;
-            } else {
-                // try format: host:port:password   or host:port
-                const parts = data.split(":");
-                if (parts.length >= 2) {
-                    document.getElementById("host").value = parts[0];
-                    document.getElementById("port").value = parts[1];
-                    if (parts.length >= 3) document.getElementById("password").value = parts.slice(2).join(":");
-                } else {
-                    throw new Error("Unrecognized QR format");
+            await html5QrCode.start(
+                { facingMode: "environment" },
+                { fps: 10, qrbox: { width: 250, height: 250 } },
+                (decodedText) => {
+                    html5QrCode.stop().catch(() => {});
+                    qrModal.style.display = "none";
+                    applyQrData(decodedText);
                 }
-            }
-            showToast("QR code applied! Tap Connect.");
-            // optionally auto-connect
-            connectWebSocket();
-        } catch(e) { alert("Invalid QR data: "+data); }
+            );
+        } catch(err) {
+            console.error("QR error", err);
+            qrModal.style.display = "none";
+            showToast("⚠️ Cannot access camera — check permissions");
+        }
     }
 
-    // ----- Event listeners -----
-    document.getElementById("connectBtn").addEventListener("click", connectWebSocket);
-    document.getElementById("scanQrBtn").addEventListener("click", startQrScanner);
-    document.getElementById("editToggleBtn").addEventListener("click", toggleEditMode);
-    document.getElementById("clearAllBtn").addEventListener("click", clearAll);
-    document.getElementById("saveConfigBtn").addEventListener("click", saveLocalConfig);
-    document.getElementById("loadConfigBtn").addEventListener("click", loadLocalConfig);
-    document.getElementById("closeModalBtn").addEventListener("click", () => document.getElementById("actionModal").style.display = "none");
-    document.getElementById("closeQrModalBtn").addEventListener("click", () => {
-        if(html5QrCode) html5QrCode.stop().catch(console.warn);
-        document.getElementById("qrModal").style.display = "none";
-    });
-    window.addEventListener("click", (e) => {
-        if(e.target === document.getElementById("actionModal")) document.getElementById("actionModal").style.display = "none";
-        if(e.target === document.getElementById("qrModal")) {
-            if(html5QrCode) html5QrCode.stop().catch(console.warn);
-            document.getElementById("qrModal").style.display = "none";
+    function applyQrData(data) {
+        try {
+            let host = "", port = "", password = "";
+            if (data.trim().startsWith("{")) {
+                const parsed = JSON.parse(data);
+                host     = parsed.host     || "";
+                port     = parsed.port     || "";
+                password = parsed.password !== undefined ? parsed.password : "";
+            } else {
+                // Format: host:port  or  host:port:password
+                const parts = data.split(":");
+                if (parts.length < 2) throw new Error("Unrecognized format");
+                host     = parts[0];
+                port     = parts[1];
+                password = parts.slice(2).join(":");
+            }
+            if (host) document.getElementById("host").value     = host;
+            if (port) document.getElementById("port").value     = port;
+                      document.getElementById("password").value = password;
+            showToast("✅ QR applied — connecting…");
+            connectWebSocket(); // uses updated field values
+        } catch(e) {
+            showToast("⚠️ Invalid QR data");
+            console.warn("QR parse error:", e, "data:", data);
         }
+    }
+
+    function closeQrModal() {
+        if (html5QrCode) html5QrCode.stop().catch(() => {});
+        document.getElementById("qrModal").style.display = "none";
+    }
+
+    // ── Event listeners ───────────────────────────────────────────────────────
+    document.getElementById("connectBtn")    .addEventListener("click", connectWebSocket);
+    document.getElementById("scanQrBtn")     .addEventListener("click", startQrScanner);
+    document.getElementById("editToggleBtn") .addEventListener("click", toggleEditMode);
+    document.getElementById("clearAllBtn")   .addEventListener("click", clearAll);
+    document.getElementById("saveConfigBtn") .addEventListener("click", saveLocalConfig);
+    document.getElementById("loadConfigBtn") .addEventListener("click", () => loadLocalConfig(false));
+    document.getElementById("closeModalBtn") .addEventListener("click", () => document.getElementById("actionModal").style.display = "none");
+    document.getElementById("closeQrModalBtn").addEventListener("click", closeQrModal);
+
+    window.addEventListener("click", (e) => {
+        if (e.target === document.getElementById("actionModal")) document.getElementById("actionModal").style.display = "none";
+        if (e.target === document.getElementById("qrModal"))     closeQrModal();
     });
 
-    // initial load
-    loadLocalConfig();
+    // ── Init ──────────────────────────────────────────────────────────────────
+    loadLocalConfig(true);  // silent on startup
     renderDeck();
+    // Auto-connect if credentials are present
     setTimeout(() => {
-        const host = document.getElementById("host").value;
-        const port = document.getElementById("port").value;
-        if(host && port) connectWebSocket();
-    }, 100);
+        if (document.getElementById("host").value && document.getElementById("port").value) {
+            connectWebSocket();
+        }
+    }, 150);
 </script>
 </body>
 </html>
