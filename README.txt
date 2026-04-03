@@ -76,21 +76,7 @@ DeckMap.html
 ```
 
 ### Option 2 — GitHub Pages (recommended for desktop/mobile)
-
-1. Upload the repository to GitHub
-2. Enable GitHub Pages:
-
-   ```
-   Settings → Pages → Deploy from branch
-   ```
-3. Select the root or `/docs` folder
-4. Access via:
-
-   ```
-   https://<username>.github.io/<repo>/
-   ```
-
----
+https://mxmdgames.github.io/obs/
 
 ## Initial Connection
 
